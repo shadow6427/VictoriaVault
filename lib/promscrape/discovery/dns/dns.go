@@ -45,11 +45,9 @@ func (sdc *SDConfig) GetLabels(_ string) ([]*promutil.Labels, error) {
 	typ = strings.ToUpper(typ)
 	switch typ {
 	case "SRV":
-		ms := getSRVAddrLabels(ctx, sdc)
-		return ms, nil
+		return getSRVAddrLabels(ctx, sdc)
 	case "MX":
-		ms := getMXAddrLabels(ctx, sdc)
-		return ms, nil
+		return getMXAddrLabels(ctx, sdc)
 	case "A", "AAAA":
 		return getAAddrLabels(ctx, sdc, typ)
 	default:
@@ -62,7 +60,7 @@ func (sdc *SDConfig) MustStop() {
 	// nothing to do
 }
 
-func getMXAddrLabels(ctx context.Context, sdc *SDConfig) []*promutil.Labels {
+func getMXAddrLabels(ctx context.Context, sdc *SDConfig) ([]*promutil.Labels, error) {
 	port := 25
 	if sdc.Port != nil {
 		port = *sdc.Port
@@ -84,10 +82,14 @@ func getMXAddrLabels(ctx context.Context, sdc *SDConfig) []*promutil.Labels {
 		}(name)
 	}
 	var ms []*promutil.Labels
+	failures := 0
+	var lastErr error
 	for range sdc.Names {
 		r := <-ch
 		if r.err != nil {
 			logger.Errorf("dns_sd_config: skipping MX lookup for %q because of error: %s", r.name, r.err)
+			failures++
+			lastErr = r.err
 			continue
 		}
 		for _, mx := range r.mx {
@@ -98,10 +100,13 @@ func getMXAddrLabels(ctx context.Context, sdc *SDConfig) []*promutil.Labels {
 			ms = appendMXLabels(ms, r.name, target, port)
 		}
 	}
-	return ms
+	if failures == len(sdc.Names) {
+		return nil, fmt.Errorf("all MX lookups failed for dns_sd_config: %w", lastErr)
+	}
+	return ms, nil
 }
 
-func getSRVAddrLabels(ctx context.Context, sdc *SDConfig) []*promutil.Labels {
+func getSRVAddrLabels(ctx context.Context, sdc *SDConfig) ([]*promutil.Labels, error) {
 	type result struct {
 		name string
 		as   []*net.SRV
@@ -119,10 +124,14 @@ func getSRVAddrLabels(ctx context.Context, sdc *SDConfig) []*promutil.Labels {
 		}(name)
 	}
 	var ms []*promutil.Labels
+	failures := 0
+	var lastErr error
 	for range sdc.Names {
 		r := <-ch
 		if r.err != nil {
 			logger.Errorf("dns_sd_config: skipping SRV lookup for %q because of error: %s", r.name, r.err)
+			failures++
+			lastErr = r.err
 			continue
 		}
 		for _, a := range r.as {
@@ -133,7 +142,10 @@ func getSRVAddrLabels(ctx context.Context, sdc *SDConfig) []*promutil.Labels {
 			ms = appendAddrLabels(ms, r.name, target, int(a.Port))
 		}
 	}
-	return ms
+	if failures == len(sdc.Names) {
+		return nil, fmt.Errorf("all SRV lookups failed for dns_sd_config: %w", lastErr)
+	}
+	return ms, nil
 }
 
 func getAAddrLabels(ctx context.Context, sdc *SDConfig, lookupType string) ([]*promutil.Labels, error) {
@@ -158,10 +170,14 @@ func getAAddrLabels(ctx context.Context, sdc *SDConfig, lookupType string) ([]*p
 		}(name)
 	}
 	var ms []*promutil.Labels
+	failures := 0
+	var lastErr error
 	for range sdc.Names {
 		r := <-ch
 		if r.err != nil {
 			logger.Errorf("error in %s lookup for %q: %s", lookupType, r.name, r.err)
+			failures++
+			lastErr = r.err
 			continue
 		}
 		for _, ip := range r.ips {
@@ -171,6 +187,9 @@ func getAAddrLabels(ctx context.Context, sdc *SDConfig, lookupType string) ([]*p
 			}
 			ms = appendAddrLabels(ms, r.name, ip.IP.String(), port)
 		}
+	}
+	if failures == len(sdc.Names) {
+		return nil, fmt.Errorf("all %s lookups failed for dns_sd_config: %w", lookupType, lastErr)
 	}
 	return ms, nil
 }
